@@ -3,11 +3,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Layout, Plus, Activity, Utensils, Calendar, ChevronRight,
   CheckCircle2, TrendingUp, PieChart as PieChartIcon,
-  Scale, User, Target, Info, Flame, Trash2
+  Scale, User, Target, Info, Flame, Trash2, Camera, Sparkles, MessageSquare
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
 import { Meal, Workout, DailyStats, ViewType } from './types';
-import { analyzeMeal, analyzeWorkout, getDailyInsight } from './services/geminiService';
+import { analyzeMeal, analyzeMealWithImage, analyzeWorkout, getDailyInsight, getDietaryAdvice } from './services/geminiService';
 import {
   supabase,
   fetchDailyData,
@@ -38,6 +38,9 @@ const App: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [dailyInsight, setDailyInsight] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [dietaryAdvice, setDietaryAdvice] = useState<string | null>(null);
+  const [isGettingAdvice, setIsGettingAdvice] = useState(false);
 
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
@@ -53,11 +56,11 @@ const App: React.FC = () => {
   }, [history, todayStr]);
 
   const stats = useMemo(() => {
-    const consumedCals = currentDay.meals.reduce((sum, m) => sum + m.calories, 0);
-    const burnedCals = currentDay.workouts.reduce((sum, w) => sum + w.caloriesBurned, 0);
-    const protein = currentDay.meals.reduce((sum, m) => sum + m.protein, 0);
-    const carbs = currentDay.meals.reduce((sum, m) => sum + m.carbs, 0);
-    const fat = currentDay.meals.reduce((sum, m) => sum + m.fat, 0);
+    const consumedCals = currentDay.meals.reduce((sum: number, m: Meal) => sum + m.calories, 0);
+    const burnedCals = currentDay.workouts.reduce((sum: number, w: Workout) => sum + w.caloriesBurned, 0);
+    const protein = currentDay.meals.reduce((sum: number, m: Meal) => sum + m.protein, 0);
+    const carbs = currentDay.meals.reduce((sum: number, m: Meal) => sum + m.carbs, 0);
+    const fat = currentDay.meals.reduce((sum: number, m: Meal) => sum + m.fat, 0);
     const netCals = consumedCals - burnedCals;
     return { consumedCals, burnedCals, netCals, protein, carbs, fat };
   }, [currentDay]);
@@ -83,13 +86,23 @@ const App: React.FC = () => {
   }, [todayStr]);
 
   const handleAddMeal = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() && !selectedImage) return;
     setIsAnalyzing(true);
     try {
-      const result = await analyzeMeal(inputText);
+      let result;
+      if (selectedImage) {
+        result = await analyzeMealWithImage(selectedImage, inputText);
+      } else {
+        result = await analyzeMeal(inputText);
+      }
+
       const tempMeal: Omit<Meal, 'id'> = {
-        ...result,
-        originalText: inputText,
+        name: result.name,
+        calories: result.calories,
+        protein: result.protein,
+        carbs: result.carbs,
+        fat: result.fat,
+        originalText: inputText || `Photo: ${result.name}`,
         timestamp: Date.now()
       };
 
@@ -105,12 +118,37 @@ const App: React.FC = () => {
 
       setHistory(updatedHistory);
       setInputText('');
+      setSelectedImage(null);
       setIsLoggingMeal(false);
     } catch (e: any) {
       console.error("Add Meal Error:", e);
       alert(`Analysis failed: ${e.message || 'Unknown error'}. Check console for details.`);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleGetDietaryAdvice = async () => {
+    setIsGettingAdvice(true);
+    try {
+      const advice = await getDietaryAdvice(stats, USER_PROFILE);
+      setDietaryAdvice(advice);
+    } catch (e) {
+      console.error("Advice Error:", e);
+      setDietaryAdvice("Focus on hitting your protein goal today!");
+    } finally {
+      setIsGettingAdvice(false);
     }
   };
 
@@ -197,12 +235,12 @@ const App: React.FC = () => {
     const data = [];
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 (Sun) to 6 (Sat)
-    
+
     // Adjust to make Monday the first day (0) and Sunday the last day (6)
     // In JS: Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6
     // We want: Mon=0, Tue=1, Wed=2, Thu=3, Fri=4, Sat=5, Sun=6
     const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-    
+
     const monday = new Date(now);
     monday.setDate(now.getDate() - diffToMonday);
     monday.setHours(0, 0, 0, 0);
@@ -211,12 +249,12 @@ const App: React.FC = () => {
       const d = new Date(monday);
       d.setDate(monday.getDate() + i);
       const ds = d.toISOString().split('T')[0];
-      const day = history.find(h => h.date === ds) || { meals: [], workouts: [] };
+      const day = history.find(h => h.date === ds);
       data.push({
         name: d.toLocaleDateString('en-US', { weekday: 'short' }),
-        calories: day.meals.reduce((sum, m) => sum + m.calories, 0),
-        burned: day.workouts.reduce((sum, w) => sum + w.caloriesBurned, 0),
-        protein: day.meals.reduce((sum, m) => sum + m.protein, 0),
+        calories: (day?.meals || []).reduce((sum: number, m: Meal) => sum + m.calories, 0),
+        burned: (day?.workouts || []).reduce((sum: number, w: Workout) => sum + w.caloriesBurned, 0),
+        protein: (day?.meals || []).reduce((sum: number, m: Meal) => sum + m.protein, 0),
       });
     }
     return data;
@@ -458,6 +496,38 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Fat</div>
                 </div>
               </div>
+
+              {/* AI Advisor Card */}
+              <div className="bg-indigo-600 text-white p-6 rounded-[2rem] shadow-xl relative overflow-hidden group border border-indigo-400">
+                <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:rotate-12 transition-transform">
+                  <Sparkles size={100} />
+                </div>
+                <h3 className="text-lg font-black mb-4 flex items-center gap-2">
+                  <MessageSquare size={20} className="text-indigo-200" />
+                  AI Advisor
+                </h3>
+                <p className="text-xs font-bold text-indigo-100 mb-6 leading-relaxed">
+                  Need help deciding your next meal based on today's progress?
+                </p>
+
+                {dietaryAdvice ? (
+                  <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 mb-6 border border-white/10 animate-in fade-in zoom-in-95 duration-300">
+                    <p className="text-sm font-medium leading-relaxed italic">"{dietaryAdvice}"</p>
+                  </div>
+                ) : null}
+
+                <button
+                  onClick={handleGetDietaryAdvice}
+                  disabled={isGettingAdvice}
+                  className="w-full bg-white text-indigo-600 py-3 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-50 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isGettingAdvice ? (
+                    <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-600"></span>
+                  ) : (
+                    <>Ask What to Eat Next <ChevronRight size={16} /></>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -540,13 +610,41 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <textarea
-              autoFocus
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder={isLoggingMeal ? "What's on the menu? Be as descriptive as you like." : "What was the workout? Duration and how it felt..."}
-              className="w-full h-40 p-6 bg-slate-50 border border-slate-200 rounded-[2rem] focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 focus:outline-none resize-none mb-8 font-bold text-slate-700 placeholder:text-slate-300 transition-all text-lg"
-            />
+            <div className="relative mb-8">
+              <textarea
+                autoFocus
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                placeholder={isLoggingMeal ? "What's on the menu? Be as descriptive as you like." : "What was the workout? Duration and how it felt..."}
+                className="w-full h-40 p-6 bg-slate-50 border border-slate-200 rounded-[2rem] focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 focus:outline-none resize-none font-bold text-slate-700 placeholder:text-slate-300 transition-all text-lg"
+              />
+
+              {isLoggingMeal && (
+                <div className="absolute bottom-4 right-4 flex items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageSelect}
+                    id="meal-image"
+                    className="hidden"
+                  />
+                  {selectedImage && (
+                    <div className="relative group">
+                      <img src={selectedImage} alt="Selected" className="w-16 h-16 rounded-xl object-cover border-2 border-emerald-500 shadow-lg" />
+                      <button
+                        onClick={() => setSelectedImage(null)}
+                        className="absolute -top-2 -right-2 bg-rose-500 text-white rounded-full p-1 shadow-md hover:bg-rose-600 transition-colors"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  )}
+                  <label htmlFor="meal-image" className="bg-white p-3 rounded-2xl shadow-lg border border-slate-100 text-slate-600 hover:text-emerald-600 cursor-pointer hover:shadow-xl transition-all">
+                    <Camera size={24} />
+                  </label>
+                </div>
+              )}
+            </div>
 
             <div className="flex gap-4">
               <button
@@ -556,7 +654,7 @@ const App: React.FC = () => {
                 Cancel
               </button>
               <button
-                disabled={isAnalyzing || !inputText.trim()}
+                disabled={isAnalyzing || (isLoggingMeal ? (!inputText.trim() && !selectedImage) : !inputText.trim())}
                 onClick={isLoggingMeal ? handleAddMeal : handleAddWorkout}
                 className={`flex-[2] py-5 font-black rounded-3xl text-white flex items-center justify-center gap-2 transition-all shadow-xl active:scale-95 disabled:opacity-50 uppercase tracking-widest text-sm ${isLoggingMeal ? 'bg-emerald-600 shadow-emerald-200' : 'bg-orange-600 shadow-orange-200'}`}
               >
