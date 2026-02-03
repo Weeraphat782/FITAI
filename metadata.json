@@ -1,0 +1,5 @@
+{
+  "name": "FitAI - AI-Powered Nutrition & Fitness Tracker",
+  "description": "An aesthetic fitness and meal logging application that uses Gemini AI to analyze food intake and workout intensity from natural language descriptions.",
+  "requestFramePermissions": []
+}
